@@ -5,7 +5,7 @@ plugins {
     id("org.jetbrains.compose")
 }
 
-group = "ants"
+group = "fi.kapsi.kosmik.ants"
 version = "1.0-SNAPSHOT"
 
 repositories {
@@ -33,7 +33,7 @@ kotlin {
 
 compose.desktop {
     application {
-        mainClass = "MainKt"
+        mainClass = "ants.MainKt"
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "ant-simulator-2000"
