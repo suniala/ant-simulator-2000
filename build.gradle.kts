@@ -4,6 +4,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 plugins {
     kotlin("jvm")
     id("org.jetbrains.compose")
+    id("com.google.devtools.ksp") version "1.8.20-1.0.10"
 }
 
 repositories {
@@ -21,6 +22,9 @@ tasks.withType(KotlinCompile::class) {
 dependencies {
     implementation(compose.desktop.currentOs)
     implementation("org.jetbrains.kotlinx:kotlinx-collections-immutable:0.3.5")
+    implementation("io.arrow-kt:arrow-core:1.2.0-RC")
+    implementation("io.arrow-kt:arrow-optics:1.2.0-RC")
+    ksp("io.arrow-kt:arrow-optics-ksp-plugin:1.2.0-RC")
 }
 
 compose.desktop {

@@ -21,6 +21,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import arrow.optics.optics
 import kotlinx.collections.immutable.ImmutableSet
 import kotlinx.collections.immutable.PersistentMap
 import kotlinx.collections.immutable.toPersistentHashMap
@@ -38,11 +39,14 @@ import kotlin.random.asKotlinRandom
 
 val worldSize = Size(1024f, 1024f)
 
+@optics
 data class WorldPosition(val x: Float, val y: Float) {
     init {
         assert(0f.rangeUntil(worldSize.width).contains(x))
         assert(0f.rangeUntil(worldSize.height).contains(y))
     }
+
+    companion object
 }
 
 @Composable
@@ -99,8 +103,17 @@ class MoveAntMsg(val antId: AntId) : StateMsg()
 class GetStateMsg(val response: CompletableDeferred<WorldState>) : StateMsg()
 
 data class AntId(val id: Int)
-data class Ant(val id: AntId, val position: WorldPosition)
-data class WorldState(val ants: PersistentMap<AntId, Ant>)
+
+@optics
+data class Ant(val id: AntId, val position: WorldPosition) {
+    companion object
+}
+
+// NOTE: @optics does not work for this data class but produces a compilation error:
+// "Type mismatch: inferred type is Unit but WorldState was expected"
+data class WorldState(val ants: PersistentMap<AntId, Ant>) {
+    companion object
+}
 
 @OptIn(ObsoleteCoroutinesApi::class)
 fun CoroutineScope.worldStateActor() = actor<StateMsg> {
@@ -115,7 +128,7 @@ fun CoroutineScope.worldStateActor() = actor<StateMsg> {
         when (msg) {
             is MoveAntMsg -> {
                 val ant = checkNotNull(state.ants[msg.antId])
-                val updated = ant.copy(position = ant.position.copy(x = ant.position.x + 10))
+                val updated = Ant.position.x.modify(ant) { it + 10 }
                 state = state.copy(ants = state.ants.put(ant.id, updated))
             }
 
