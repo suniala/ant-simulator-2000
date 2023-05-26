@@ -19,27 +19,33 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ObsoleteCoroutinesApi
+import kotlinx.coroutines.channels.SendChannel
+import kotlinx.coroutines.channels.actor
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.newSingleThreadContext
 import kotlinx.coroutines.withContext
+import kotlin.random.asKotlinRandom
 import kotlin.system.measureTimeMillis
 
 @Composable
 @Preview
-fun App(getCounter: () -> Int) {
+fun App(getCounter: suspend () -> Int?) {
     MaterialTheme {
         Scaffold(
             topBar = {
                 TopAppBar(title = {
-                    var counter by remember { mutableStateOf(0) }
+                    var counter by remember { mutableStateOf<Int?>(null) }
                     LaunchedEffect(counter) {
                         delay(1_000)
                         counter = getCounter()
                     }
 
-                    Text(text = counter.toString())
+                    Text(text = counter?.toString() ?: "-")
                 })
             }
         ) {
@@ -62,8 +68,8 @@ fun App(getCounter: () -> Int) {
 }
 
 suspend fun massiveRun(action: suspend () -> Unit) {
-    val n = 131  // number of coroutines to launch
-    val k = 300 // times an action is repeated by each coroutine
+    val n = 100  // number of coroutines to launch
+    val k = 1000 // times an action is repeated by each coroutine
     val time = measureTimeMillis {
         coroutineScope { // scope for coroutines
             repeat(n) {
@@ -76,22 +82,49 @@ suspend fun massiveRun(action: suspend () -> Unit) {
     println("Completed ${n * k} actions in $time ms")
 }
 
-val counterContext = newSingleThreadContext("CounterContext")
-var counter = 0
+// Message types for counterActor
+sealed class CounterMsg
+object IncCounter : CounterMsg() // one-way message to increment counter
+class GetCounter(val response: CompletableDeferred<Int>) : CounterMsg() // a request with reply
+
+// This function launches a new counter actor
+@OptIn(ObsoleteCoroutinesApi::class)
+fun CoroutineScope.counterActor() = actor<CounterMsg> {
+    var counter = 0 // actor state
+    for (msg in channel) { // iterate over incoming messages
+        when (msg) {
+            is IncCounter -> counter++
+            is GetCounter -> msg.response.complete(counter)
+        }
+    }
+}
+
+val random = java.util.Random(1234).asKotlinRandom()
+var counter: SendChannel<CounterMsg>? = null
 
 fun main() = application {
     Window(onCloseRequest = ::exitApplication) {
-        App { counter }
+        App {
+            counter?.let { c ->
+                val counterResponse = CompletableDeferred<Int>()
+                c.send(GetCounter(counterResponse))
+                counterResponse.await()
+            }
+        }
     }
 
     LaunchedEffect(Unit) {
-        // confine everything to a single-threaded context
-        withContext(counterContext) {
+        counter = counterActor() // create the actor
+        withContext(Dispatchers.Default) {
             massiveRun {
-                counter++
-                delay(111)
+                delay(random.nextLong(100, 1000))
+                checkNotNull(counter).send(IncCounter)
             }
         }
-        println("Counter = $counter")
+        // send a message to get a counter value from an actor
+        val response = CompletableDeferred<Int>()
+        checkNotNull(counter).send(GetCounter(response))
+        println("Counter = ${response.await()}")
+        checkNotNull(counter).close() // shutdown the actor
     }
 }
