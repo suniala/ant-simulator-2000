@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalStdlibApi::class)
+
 package ants
 
 import androidx.compose.desktop.ui.tooling.preview.Preview
@@ -19,6 +21,9 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import kotlinx.collections.immutable.ImmutableSet
+import kotlinx.collections.immutable.PersistentMap
+import kotlinx.collections.immutable.toPersistentHashMap
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,101 +35,121 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.random.asKotlinRandom
-import kotlin.system.measureTimeMillis
+
+val worldSize = Size(1024f, 1024f)
+
+data class WorldPosition(val x: Float, val y: Float) {
+    init {
+        assert(0f.rangeUntil(worldSize.width).contains(x))
+        assert(0f.rangeUntil(worldSize.height).contains(y))
+    }
+}
 
 @Composable
 @Preview
-fun App(getCounter: suspend () -> Int?) {
+fun App(getWorldState: suspend () -> WorldState?) {
+    var maybeWorldState by remember { mutableStateOf<WorldState?>(null) }
+
     MaterialTheme {
         Scaffold(
             topBar = {
                 TopAppBar(title = {
-                    var counter by remember { mutableStateOf<Int?>(null) }
-                    LaunchedEffect(counter) {
+                    LaunchedEffect(maybeWorldState) {
                         delay(1_000)
-                        counter = getCounter()
+                        maybeWorldState = getWorldState()
                     }
 
-                    Text(text = counter?.toString() ?: "-")
+                    Text("Some status text...")
                 })
             }
         ) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val purpleColor = Color(0xFFBA68C8)
-                val worldSize = Size(1024f, 1024f)
-                drawCircle(
-                    color = purpleColor,
-                    radius = size.minDimension / 19f,
-                    center = Offset(300f / worldSize.width * size.width, 400f / worldSize.height * size.height)
-                )
-                drawCircle(
-                    color = purpleColor,
-                    radius = size.minDimension / 19f,
-                    center = Offset(600f / worldSize.width * size.width, 300f / worldSize.height * size.height)
-                )
-            }
-        }
-    }
-}
-
-suspend fun massiveRun(action: suspend () -> Unit) {
-    val n = 100  // number of coroutines to launch
-    val k = 1000 // times an action is repeated by each coroutine
-    val time = measureTimeMillis {
-        coroutineScope { // scope for coroutines
-            repeat(n) {
-                launch {
-                    repeat(k) { action() }
+                maybeWorldState?.let { worldState ->
+                    worldState.ants.forEach { ant ->
+                        drawCircle(
+                            color = purpleColor,
+                            radius = size.minDimension / 42f,
+                            center = Offset(
+                                ant.value.position.x / worldSize.width * size.width,
+                                ant.value.position.y / worldSize.height * size.height
+                            )
+                        )
+                    }
                 }
             }
         }
     }
-    println("Completed ${n * k} actions in $time ms")
 }
 
-// Message types for counterActor
-sealed class CounterMsg
-object IncCounter : CounterMsg() // one-way message to increment counter
-class GetCounter(val response: CompletableDeferred<Int>) : CounterMsg() // a request with reply
+suspend fun massiveRun(ants: ImmutableSet<AntId>, action: suspend (AntId) -> Unit) {
+    coroutineScope { // scope for coroutines
+        ants.forEach { antId ->
+            launch {
+                while (true) {
+                    action(antId)
+                }
+            }
+        }
+    }
+}
 
-// This function launches a new counter actor
+sealed class StateMsg
+class MoveAntMsg(val antId: AntId) : StateMsg()
+class GetStateMsg(val response: CompletableDeferred<WorldState>) : StateMsg()
+
+data class AntId(val id: Int)
+data class Ant(val id: AntId, val position: WorldPosition)
+data class WorldState(val ants: PersistentMap<AntId, Ant>)
+
 @OptIn(ObsoleteCoroutinesApi::class)
-fun CoroutineScope.counterActor() = actor<CounterMsg> {
-    var counter = 0 // actor state
-    for (msg in channel) { // iterate over incoming messages
+fun CoroutineScope.worldStateActor() = actor<StateMsg> {
+    var state = WorldState(
+        ants = (1..2)
+            .map { Ant(AntId(it), WorldPosition(it.toFloat() * 10, it.toFloat() * 10)) }
+            .associateBy { it.id }
+            .toPersistentHashMap()
+    )
+
+    for (msg in channel) {
         when (msg) {
-            is IncCounter -> counter++
-            is GetCounter -> msg.response.complete(counter)
+            is MoveAntMsg -> {
+                val ant = checkNotNull(state.ants[msg.antId])
+                val updated = ant.copy(position = ant.position.copy(x = ant.position.x + 10))
+                state = state.copy(ants = state.ants.put(ant.id, updated))
+            }
+
+            is GetStateMsg -> msg.response.complete(state)
         }
     }
 }
 
 val random = java.util.Random(1234).asKotlinRandom()
-var counter: SendChannel<CounterMsg>? = null
+var maybeWorldStateChannel: SendChannel<StateMsg>? = null
 
 fun main() = application {
     Window(onCloseRequest = ::exitApplication) {
         App {
-            counter?.let { c ->
-                val counterResponse = CompletableDeferred<Int>()
-                c.send(GetCounter(counterResponse))
-                counterResponse.await()
+            maybeWorldStateChannel?.let { channel ->
+                val stateResponse = CompletableDeferred<WorldState>()
+                channel.send(GetStateMsg(stateResponse))
+                stateResponse.await()
             }
         }
     }
 
     LaunchedEffect(Unit) {
-        counter = counterActor() // create the actor
-        withContext(Dispatchers.Default) {
-            massiveRun {
-                delay(random.nextLong(100, 1000))
-                checkNotNull(counter).send(IncCounter)
+        maybeWorldStateChannel = worldStateActor()
+        val initialResponse = CompletableDeferred<WorldState>()
+        checkNotNull(maybeWorldStateChannel).send(GetStateMsg(initialResponse))
+
+        initialResponse.await().let { initialState ->
+            withContext(Dispatchers.Default) {
+                massiveRun(initialState.ants.keys) {
+                    delay(random.nextLong(100, 1000))
+                    checkNotNull(maybeWorldStateChannel).send(MoveAntMsg(it))
+                }
             }
         }
-        // send a message to get a counter value from an actor
-        val response = CompletableDeferred<Int>()
-        checkNotNull(counter).send(GetCounter(response))
-        println("Counter = ${response.await()}")
-        checkNotNull(counter).close() // shutdown the actor
     }
 }
