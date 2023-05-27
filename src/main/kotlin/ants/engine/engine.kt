@@ -26,11 +26,11 @@ import kotlin.math.sin
 
 sealed class StateMsg
 class MoveAntMsg(val antId: AntId, val f: (Ant) -> Pair<WorldPosition, Direction>) : StateMsg()
-class GetStateMsg(val response: CompletableDeferred<WorldState>) : StateMsg()
+class GetStateMsg(val response: CompletableDeferred<State>) : StateMsg()
 
 @OptIn(ObsoleteCoroutinesApi::class)
-private fun CoroutineScope.worldStateActor(ants: PersistentMap<AntId, Ant>) = actor<StateMsg> {
-    var state = WorldState(ants = ants)
+private fun CoroutineScope.stateActor(ants: PersistentMap<AntId, Ant>) = actor<StateMsg> {
+    var state = State(ants = ants)
 
     for (msg in channel) {
         when (msg) {
@@ -55,11 +55,11 @@ suspend fun createEngine(scope: CoroutineScope): SendChannel<StateMsg> =
             .associateBy { it.id }
             .toPersistentHashMap()
 
-        worldStateActor(ants).also { worldStateActor ->
+        stateActor(ants).also { stateActor ->
             launch {
-                worldStateActor.let { worldStateChannel ->
-                    val initialResponse = CompletableDeferred<WorldState>()
-                    worldStateChannel.send(GetStateMsg(initialResponse))
+                stateActor.let { stateChannel ->
+                    val initialResponse = CompletableDeferred<State>()
+                    stateChannel.send(GetStateMsg(initialResponse))
 
                     initialResponse.await().let { initialState ->
                         withContext(Dispatchers.Default) {
@@ -68,7 +68,7 @@ suspend fun createEngine(scope: CoroutineScope): SendChannel<StateMsg> =
                                     while (true) {
                                         delay(random.nextLong(50, 100))
 
-                                        worldStateChannel.send(MoveAntMsg(antId) { ant ->
+                                        stateChannel.send(MoveAntMsg(antId) { ant ->
                                             val turnBy =
                                                 if (random.nextLong(0, 20) < 1) Turn((random.nextFloat() - 0.5f) * 10)
                                                 else Turn(0f)

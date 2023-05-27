@@ -24,7 +24,7 @@ import ants.common.World
 import ants.common.World.worldSize
 import ants.engine.GetStateMsg
 import ants.engine.StateMsg
-import ants.engine.WorldState
+import ants.engine.State
 import ants.engine.createEngine
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.SendChannel
@@ -44,16 +44,16 @@ val colors = listOf(
 
 @Composable
 @Preview
-fun App(getWorldState: suspend () -> WorldState?) {
-    var maybeWorldState by remember { mutableStateOf<WorldState?>(null) }
+fun App(aGetState: suspend () -> State?) {
+    var maybeState by remember { mutableStateOf<State?>(null) }
 
     MaterialTheme {
         Scaffold(
             topBar = {
                 TopAppBar(title = {
-                    LaunchedEffect(maybeWorldState) {
+                    LaunchedEffect(maybeState) {
                         delay(100)
-                        maybeWorldState = getWorldState()
+                        maybeState = aGetState()
                     }
 
                     Text("Some status text...")
@@ -61,7 +61,7 @@ fun App(getWorldState: suspend () -> WorldState?) {
             }
         ) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                maybeWorldState?.let { worldState ->
+                maybeState?.let { worldState ->
                     worldState.ants
                         .values
                         .map { ant ->
@@ -87,13 +87,13 @@ fun App(getWorldState: suspend () -> WorldState?) {
     }
 }
 
-private var maybeWorldStateChannel: SendChannel<StateMsg>? = null
+private var maybeStateChannel: SendChannel<StateMsg>? = null
 
 fun main() = application {
     Window(onCloseRequest = ::exitApplication) {
         App {
-            maybeWorldStateChannel?.let { channel ->
-                val stateResponse = CompletableDeferred<WorldState>()
+            maybeStateChannel?.let { channel ->
+                val stateResponse = CompletableDeferred<State>()
                 channel.send(GetStateMsg(stateResponse))
                 stateResponse.await()
             }
@@ -101,7 +101,7 @@ fun main() = application {
     }
 
     LaunchedEffect(Unit) {
-        maybeWorldStateChannel = createEngine(this)
+        maybeStateChannel = createEngine(this)
     }
 }
 
