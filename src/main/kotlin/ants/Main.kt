@@ -21,6 +21,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import ants.Direction.Companion.randomDirection
 import ants.World.randomPosition
 import ants.World.worldSize
 import arrow.optics.optics
@@ -35,6 +36,9 @@ import kotlinx.coroutines.channels.actor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.random.asKotlinRandom
 
 val random = java.util.Random(System.currentTimeMillis()).asKotlinRandom()
@@ -45,14 +49,58 @@ object World {
     fun contains(position: WorldPosition): Boolean =
         0f.rangeUntil(worldSize.width).contains(position.x) && 0f.rangeUntil(worldSize.height).contains(position.y)
 
-    fun randomPosition(): WorldPosition = WorldPosition(random.nextFloat() * worldSize.width, random.nextFloat() * worldSize.height)
+    fun randomPosition(): WorldPosition =
+        WorldPosition(random.nextFloat() * worldSize.width, random.nextFloat() * worldSize.height)
+}
+
+data class Turn(val degrees: Float) {
+    init {
+        require((-360f).rangeUntil(360f).contains(degrees))
+    }
+}
+
+@optics
+data class Direction(val degrees: Float) {
+    init {
+        require(0f.rangeUntil(360f).contains(degrees))
+    }
+
+    fun isHorizontal(): Boolean = degrees == 90f || degrees == 270f
+    fun isVertical(): Boolean = degrees == 0f || degrees == 180f
+
+    fun turn(t: Turn): Direction {
+        val newDegrees = degrees + t.degrees
+
+        return when {
+            newDegrees < 0 -> Direction(newDegrees + 360)
+            newDegrees >= 360 -> Direction(newDegrees - 360)
+            else -> Direction(newDegrees)
+        }
+    }
+
+    companion object {
+        fun randomDirection(): Direction = Direction(random.nextFloat() * 360)
+    }
 }
 
 @optics
 data class WorldPosition(val x: Float, val y: Float) {
     fun move(dx: Float, dy: Float) = WorldPosition(x = x + dx, y = y + dy)
+
     companion object
 }
+
+val colors = listOf(
+    Color.Black,
+    Color.Blue,
+    Color.Cyan,
+    Color.DarkGray,
+    Color.Gray,
+    Color.Green,
+    Color.LightGray,
+    Color.Magenta,
+    Color.Yellow
+)
 
 @Composable
 @Preview
@@ -73,17 +121,23 @@ fun App(getWorldState: suspend () -> WorldState?) {
             }
         ) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                val purpleColor = Color(0xFFBA68C8)
                 maybeWorldState?.let { worldState ->
                     worldState.ants
-                        .filter { World.contains(it.value.position) }
-                        .forEach { ant ->
+                        .values
+                        .map { ant ->
+                            Pair(
+                                ant,
+                                colors[ant.id.id % colors.size],
+                            )
+                        }
+                        .filter { (ant, _) -> World.contains(ant.position) }
+                        .forEach { (ant, color) ->
                             drawCircle(
-                                color = purpleColor,
+                                color = color,
                                 radius = size.minDimension / 42f,
                                 center = Offset(
-                                    ant.value.position.x / worldSize.width * size.width,
-                                    ant.value.position.y / worldSize.height * size.height
+                                    ant.position.x / worldSize.width * size.width,
+                                    ant.position.y / worldSize.height * size.height
                                 )
                             )
                         }
@@ -94,13 +148,13 @@ fun App(getWorldState: suspend () -> WorldState?) {
 }
 
 sealed class StateMsg
-class MoveAntMsg(val antId: AntId, val f: (Ant) -> WorldPosition) : StateMsg()
+class MoveAntMsg(val antId: AntId, val f: (Ant) -> Pair<WorldPosition, Direction>) : StateMsg()
 class GetStateMsg(val response: CompletableDeferred<WorldState>) : StateMsg()
 
 data class AntId(val id: Int)
 
 @optics
-data class Ant(val id: AntId, val position: WorldPosition) {
+data class Ant(val id: AntId, val position: WorldPosition, val direction: Direction) {
     companion object
 }
 
@@ -118,7 +172,10 @@ fun CoroutineScope.worldStateActor(ants: PersistentMap<AntId, Ant>) = actor<Stat
         when (msg) {
             is MoveAntMsg -> {
                 val ant = checkNotNull(state.ants[msg.antId])
-                val updated = Ant.position.modify(ant) { msg.f(ant) }
+                val (position, direction) = msg.f(ant)
+                val updated = Ant.position.modify(ant) { position }
+                    .let { Ant.direction.modify(it) { direction } }
+
                 state = state.copy(ants = state.ants.put(ant.id, updated))
             }
 
@@ -142,7 +199,7 @@ fun main() = application {
 
     LaunchedEffect(Unit) {
         val ants = (1..100)
-            .map { Ant(AntId(it), randomPosition()) }
+            .map { Ant(AntId(it), randomPosition(), randomDirection()) }
             .associateBy { it.id }
             .toPersistentHashMap()
 
@@ -159,11 +216,29 @@ fun main() = application {
                             launch {
                                 while (true) {
                                     delay(random.nextLong(50, 100))
+
                                     worldStateChannel.send(MoveAntMsg(antId) { ant ->
-                                        ant.position.move(
-                                            (random.nextFloat() - 0.5f) * 10,
-                                            (random.nextFloat() - 0.5f) * 10,
-                                        )
+                                        val turnBy =
+                                            if (random.nextLong(0, 20) < 1) Turn((random.nextFloat() - 0.5f) * 10)
+                                            else Turn(0f)
+                                        val moveBy = 1f
+                                        val newDirection = ant.direction.turn(turnBy)
+
+                                        val dx: Float = when {
+                                            newDirection.isVertical() -> 0f
+                                            newDirection.degrees < 180f -> moveBy / cos(abs(90 - newDirection.degrees))
+                                            else -> moveBy / cos(abs(270 - newDirection.degrees))
+                                        }
+                                        val dy: Float = when {
+                                            newDirection.isHorizontal() -> 0f
+                                            newDirection.degrees < 90f || newDirection.degrees > 270f -> moveBy / sin(
+                                                abs(90 - newDirection.degrees)
+                                            )
+
+                                            else -> moveBy / sin(abs(270 - newDirection.degrees))
+                                        }
+
+                                        Pair(ant.position.move(dx, dy), newDirection)
                                     })
                                 }
                             }
