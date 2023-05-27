@@ -21,6 +21,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import ants.World.randomPosition
+import ants.World.worldSize
 import arrow.optics.optics
 import kotlinx.collections.immutable.PersistentMap
 import kotlinx.collections.immutable.toPersistentHashMap
@@ -35,15 +37,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.random.asKotlinRandom
 
-val worldSize = Size(1024f, 1024f)
+val random = java.util.Random(System.currentTimeMillis()).asKotlinRandom()
+
+object World {
+    val worldSize = Size(1024f, 1024f)
+
+    fun contains(position: WorldPosition): Boolean =
+        0f.rangeUntil(worldSize.width).contains(position.x) && 0f.rangeUntil(worldSize.height).contains(position.y)
+
+    fun randomPosition(): WorldPosition = WorldPosition(random.nextFloat() * worldSize.width, random.nextFloat() * worldSize.height)
+}
 
 @optics
 data class WorldPosition(val x: Float, val y: Float) {
-    init {
-        assert(0f.rangeUntil(worldSize.width).contains(x))
-        assert(0f.rangeUntil(worldSize.height).contains(y))
-    }
-
+    fun move(dx: Float, dy: Float) = WorldPosition(x = x + dx, y = y + dy)
     companion object
 }
 
@@ -57,7 +64,7 @@ fun App(getWorldState: suspend () -> WorldState?) {
             topBar = {
                 TopAppBar(title = {
                     LaunchedEffect(maybeWorldState) {
-                        delay(1_000)
+                        delay(100)
                         maybeWorldState = getWorldState()
                     }
 
@@ -68,16 +75,18 @@ fun App(getWorldState: suspend () -> WorldState?) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val purpleColor = Color(0xFFBA68C8)
                 maybeWorldState?.let { worldState ->
-                    worldState.ants.forEach { ant ->
-                        drawCircle(
-                            color = purpleColor,
-                            radius = size.minDimension / 42f,
-                            center = Offset(
-                                ant.value.position.x / worldSize.width * size.width,
-                                ant.value.position.y / worldSize.height * size.height
+                    worldState.ants
+                        .filter { World.contains(it.value.position) }
+                        .forEach { ant ->
+                            drawCircle(
+                                color = purpleColor,
+                                radius = size.minDimension / 42f,
+                                center = Offset(
+                                    ant.value.position.x / worldSize.width * size.width,
+                                    ant.value.position.y / worldSize.height * size.height
+                                )
                             )
-                        )
-                    }
+                        }
                 }
             }
         }
@@ -85,7 +94,7 @@ fun App(getWorldState: suspend () -> WorldState?) {
 }
 
 sealed class StateMsg
-class MoveAntMsg(val antId: AntId) : StateMsg()
+class MoveAntMsg(val antId: AntId, val f: (Ant) -> WorldPosition) : StateMsg()
 class GetStateMsg(val response: CompletableDeferred<WorldState>) : StateMsg()
 
 data class AntId(val id: Int)
@@ -102,19 +111,14 @@ data class WorldState(val ants: PersistentMap<AntId, Ant>) {
 }
 
 @OptIn(ObsoleteCoroutinesApi::class)
-fun CoroutineScope.worldStateActor() = actor<StateMsg> {
-    var state = WorldState(
-        ants = (1..2)
-            .map { Ant(AntId(it), WorldPosition(it.toFloat() * 10, it.toFloat() * 10)) }
-            .associateBy { it.id }
-            .toPersistentHashMap()
-    )
+fun CoroutineScope.worldStateActor(ants: PersistentMap<AntId, Ant>) = actor<StateMsg> {
+    var state = WorldState(ants = ants)
 
     for (msg in channel) {
         when (msg) {
             is MoveAntMsg -> {
                 val ant = checkNotNull(state.ants[msg.antId])
-                val updated = Ant.position.x.modify(ant) { it + 10 }
+                val updated = Ant.position.modify(ant) { msg.f(ant) }
                 state = state.copy(ants = state.ants.put(ant.id, updated))
             }
 
@@ -123,7 +127,6 @@ fun CoroutineScope.worldStateActor() = actor<StateMsg> {
     }
 }
 
-val random = java.util.Random(1234).asKotlinRandom()
 var maybeWorldStateChannel: SendChannel<StateMsg>? = null
 
 fun main() = application {
@@ -138,7 +141,12 @@ fun main() = application {
     }
 
     LaunchedEffect(Unit) {
-        worldStateActor().also { worldStateActor ->
+        val ants = (1..100)
+            .map { Ant(AntId(it), randomPosition()) }
+            .associateBy { it.id }
+            .toPersistentHashMap()
+
+        worldStateActor(ants).also { worldStateActor ->
             maybeWorldStateChannel = worldStateActor
 
             worldStateActor.let { worldStateChannel ->
@@ -150,8 +158,13 @@ fun main() = application {
                         initialState.ants.keys.forEach { antId ->
                             launch {
                                 while (true) {
-                                    delay(random.nextLong(100, 1000))
-                                    worldStateChannel.send(MoveAntMsg(antId))
+                                    delay(random.nextLong(50, 100))
+                                    worldStateChannel.send(MoveAntMsg(antId) { ant ->
+                                        ant.position.move(
+                                            (random.nextFloat() - 0.5f) * 10,
+                                            (random.nextFloat() - 0.5f) * 10,
+                                        )
+                                    })
                                 }
                             }
                         }
