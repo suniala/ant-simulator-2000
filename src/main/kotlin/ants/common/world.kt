@@ -30,9 +30,6 @@ data class Direction(val degrees: Float) {
         require(0f.rangeUntil(360f).contains(degrees))
     }
 
-    fun isHorizontal(): Boolean = degrees == 90f || degrees == 270f
-    fun isVertical(): Boolean = degrees == 0f || degrees == 180f
-
     fun turn(t: Turn): Direction {
         val newDegrees = degrees + t.degrees
 
@@ -48,9 +45,17 @@ data class Direction(val degrees: Float) {
     }
 }
 
+data class Distance(val raw: Float) {
+    init {
+        require(raw >= 0)
+    }
+}
+
+data class PositionDelta(val dx: Float, val dy: Float)
+
 @optics
 data class WorldPosition(val x: Float, val y: Float) {
-    fun move(dx: Float, dy: Float) = WorldPosition(x = x + dx, y = y + dy)
+    fun move(d: PositionDelta) = WorldPosition(x = x + d.dx, y = y + d.dy)
 
     companion object
 }
