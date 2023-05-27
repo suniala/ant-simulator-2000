@@ -22,7 +22,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import arrow.optics.optics
-import kotlinx.collections.immutable.ImmutableSet
 import kotlinx.collections.immutable.PersistentMap
 import kotlinx.collections.immutable.toPersistentHashMap
 import kotlinx.coroutines.CompletableDeferred
@@ -31,7 +30,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ObsoleteCoroutinesApi
 import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.channels.actor
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -80,18 +78,6 @@ fun App(getWorldState: suspend () -> WorldState?) {
                             )
                         )
                     }
-                }
-            }
-        }
-    }
-}
-
-suspend fun massiveRun(ants: ImmutableSet<AntId>, action: suspend (AntId) -> Unit) {
-    coroutineScope { // scope for coroutines
-        ants.forEach { antId ->
-            launch {
-                while (true) {
-                    action(antId)
                 }
             }
         }
@@ -152,15 +138,24 @@ fun main() = application {
     }
 
     LaunchedEffect(Unit) {
-        maybeWorldStateChannel = worldStateActor()
-        val initialResponse = CompletableDeferred<WorldState>()
-        checkNotNull(maybeWorldStateChannel).send(GetStateMsg(initialResponse))
+        worldStateActor().also { worldStateActor ->
+            maybeWorldStateChannel = worldStateActor
 
-        initialResponse.await().let { initialState ->
-            withContext(Dispatchers.Default) {
-                massiveRun(initialState.ants.keys) {
-                    delay(random.nextLong(100, 1000))
-                    checkNotNull(maybeWorldStateChannel).send(MoveAntMsg(it))
+            worldStateActor.let { worldStateChannel ->
+                val initialResponse = CompletableDeferred<WorldState>()
+                worldStateChannel.send(GetStateMsg(initialResponse))
+
+                initialResponse.await().let { initialState ->
+                    withContext(Dispatchers.Default) {
+                        initialState.ants.keys.forEach { antId ->
+                            launch {
+                                while (true) {
+                                    delay(random.nextLong(100, 1000))
+                                    worldStateChannel.send(MoveAntMsg(antId))
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
