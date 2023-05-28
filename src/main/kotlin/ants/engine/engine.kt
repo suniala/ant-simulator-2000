@@ -7,6 +7,9 @@ import ants.common.AntId
 import ants.common.AntState
 import ants.common.Direction
 import ants.common.Distance
+import ants.common.Pheromone
+import ants.common.PheromoneId
+import ants.common.PheromoneStrength
 import ants.common.Turn
 import ants.common.World
 import ants.common.calculateMovement
@@ -14,12 +17,15 @@ import ants.common.direction
 import ants.common.position
 import ants.common.random
 import ants.common.state
+import ants.common.strength
 import kotlinx.collections.immutable.PersistentMap
+import kotlinx.collections.immutable.persistentMapOf
 import kotlinx.collections.immutable.toPersistentHashMap
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ObsoleteCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.channels.actor
 import kotlinx.coroutines.delay
@@ -28,23 +34,45 @@ import kotlinx.coroutines.withContext
 
 sealed class StateMsg
 
-class NextAntStateMsg(val antId: AntId, val f: (Ant) -> Ant) : StateMsg()
+data class NextAntStateMsg(val antId: AntId, val f: (Ant) -> Pair<Ant, Boolean>) : StateMsg()
 
-class GetStateMsg(val response: CompletableDeferred<State>) : StateMsg()
+data class GetStateMsg(val response: CompletableDeferred<State>) : StateMsg()
+
+data class UpdatePheromoneMsg(val pheromoneId: PheromoneId, val f: (Pheromone) -> Pheromone?) : StateMsg()
 
 @OptIn(ObsoleteCoroutinesApi::class)
 private fun CoroutineScope.stateActor(ants: PersistentMap<AntId, Ant>) = actor<StateMsg> {
-    var state = State(ants = ants)
+    var state = State(ants = ants, pheromones = persistentMapOf())
 
     for (msg in channel) {
         when (msg) {
             is NextAntStateMsg -> {
                 val ant = checkNotNull(state.ants[msg.antId])
-                val nextAnt = msg.f(ant)
-                state = state.copy(ants = state.ants.put(ant.id, nextAnt))
+                val (nextAnt, dropPheromone) = msg.f(ant)
+
+                val nextPheromones =
+                    if (dropPheromone) {
+                        val pheromoneId = PheromoneId((state.pheromones.keys.maxByOrNull { it.id }?.id ?: 0) + 1)
+                        launch { pheromoneWorker(channel, pheromoneId) }
+                        state.pheromones.put(
+                            pheromoneId,
+                            Pheromone(pheromoneId, PheromoneStrength.fullStrength(), nextAnt.position)
+                        )
+                    } else state.pheromones
+                state = state.copy(ants = state.ants.put(ant.id, nextAnt), pheromones = nextPheromones)
             }
 
             is GetStateMsg -> msg.response.complete(state)
+
+            is UpdatePheromoneMsg -> {
+                val pheromone = checkNotNull(state.pheromones[msg.pheromoneId])
+                val nextPheromone = msg.f(pheromone)
+                state = state.copy(
+                    pheromones = if (nextPheromone != null)
+                        state.pheromones.put(pheromone.id, nextPheromone)
+                    else state.pheromones.remove(pheromone.id)
+                )
+            }
         }
     }
 }
@@ -86,8 +114,11 @@ private fun CoroutineScope.antWorker(
                 when (ant.state) {
                     AntState.INSIDE -> {
                         val moveOutside = random.nextLong(1, 1000) <= 1
-                        if (moveOutside) Ant.state.modify(ant) { AntState.OUTSIDE }
-                        else ant
+                        Pair(
+                            if (moveOutside) Ant.state.modify(ant) { AntState.OUTSIDE }
+                            else ant,
+                            false
+                        )
                     }
 
                     AntState.OUTSIDE -> {
@@ -124,9 +155,30 @@ private fun CoroutineScope.antWorker(
                                 // Choose the first option that does not move us outside the world.
                                 World.contains(positionOption)
                             }
-                        Ant.position.modify(ant) { newPosition }
+
+                        val updatedAnt = Ant.position.modify(ant) { newPosition }
                             .let { Ant.direction.modify(it) { newDirection } }
+                        val dropPheromone = random.nextLong(1, 10) <= 1
+                        Pair(updatedAnt, dropPheromone)
                     }
+                }
+            })
+        }
+    }
+}
+
+private fun CoroutineScope.pheromoneWorker(
+    stateChannel: SendChannel<StateMsg>,
+    pheromoneId: PheromoneId,
+) {
+    launch {
+        while (true) {
+            delay(100)
+            stateChannel.send(UpdatePheromoneMsg(pheromoneId) { pheromone ->
+                if (pheromone.isEffective()) Pheromone.strength.modify(pheromone) { it * 0.9f }
+                else {
+                    cancel()
+                    null
                 }
             })
         }

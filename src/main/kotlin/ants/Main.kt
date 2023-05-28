@@ -78,6 +78,20 @@ fun App(aGetState: suspend () -> State?) {
                                 )
                             )
                         }
+
+                    worldState.pheromones
+                        .values
+                        .filter { it.isEffective() }
+                        .forEach { pheromone ->
+                            drawCircle(
+                                color = Color.Green.copy(alpha = pheromone.strength.strength),
+                                radius = size.minDimension / 100f,
+                                center = Offset(
+                                    pheromone.position.x / worldSize.width * size.width,
+                                    pheromone.position.y / worldSize.height * size.height
+                                )
+                            )
+                        }
                 }
             }
         }
