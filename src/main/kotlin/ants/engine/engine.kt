@@ -65,59 +65,7 @@ suspend fun createEngine(scope: CoroutineScope): SendChannel<StateMsg> =
                     initialResponse.await().let { initialState ->
                         withContext(Dispatchers.Default) {
                             initialState.ants.keys.forEach { antId ->
-                                launch {
-                                    while (true) {
-                                        delay(random.nextLong(1, 10) * 2)
-
-                                        stateChannel.send(NextAntStateMsg(antId) { ant ->
-                                            when (ant.state) {
-                                                AntState.INSIDE -> {
-                                                    val moveOutside = random.nextLong(1, 1000) <= 1
-                                                    if (moveOutside) Ant.state.modify(ant) { AntState.OUTSIDE }
-                                                    else ant
-                                                }
-
-                                                AntState.OUTSIDE -> {
-                                                    val moveBy = Distance(1f)
-                                                    val turnOptions = sequence {
-                                                        // First options is to continue straight or turn slightly
-                                                        yield(
-                                                            if (random.nextLong(0, 20) < 1)
-                                                                Turn((random.nextFloat() - 0.5f) * 10)
-                                                            else Turn(0f)
-                                                        )
-                                                        // If that option is not viable, consider these random turns either left
-                                                        // or right until a suitable turn is found.
-                                                        // NOTE: The point of using this range is that it provides a limited and
-                                                        // exhaustive set of options. If this set does not solve the turning
-                                                        // problem then there is a logical error somewhere, and we want the
-                                                        // program to fail with an error.
-                                                        (1..18)
-                                                            // Shuffle the options, otherwise the ants will make the smallest
-                                                            // possible turns and end up circling the edges of the world.
-                                                            .shuffled(random)
-                                                            .forEach { multiplier ->
-                                                                yield(Turn(multiplier * 10f))
-                                                                yield(Turn(-multiplier * 10f))
-                                                            }
-                                                    }
-                                                    val (newDirection, newPosition) = turnOptions
-                                                        .map { turnBy ->
-                                                            val newDirection = ant.direction.turn(turnBy)
-                                                            val positionDelta = calculateMovement(newDirection, moveBy)
-                                                            Pair(newDirection, ant.position.move(positionDelta))
-                                                        }
-                                                        .first { (_, positionOption) ->
-                                                            // Choose the first option that does not move us outside the world.
-                                                            World.contains(positionOption)
-                                                        }
-                                                    Ant.position.modify(ant) { newPosition }
-                                                        .let { Ant.direction.modify(it) { newDirection } }
-                                                }
-                                            }
-                                        })
-                                    }
-                                }
+                                launch { antWorker(stateChannel, antId) }
                             }
                         }
                     }
@@ -125,3 +73,62 @@ suspend fun createEngine(scope: CoroutineScope): SendChannel<StateMsg> =
             }
         }
     }
+
+private fun CoroutineScope.antWorker(
+    stateChannel: SendChannel<StateMsg>,
+    antId: AntId,
+) {
+    launch {
+        while (true) {
+            delay(random.nextLong(1, 10) * 2)
+
+            stateChannel.send(NextAntStateMsg(antId) { ant ->
+                when (ant.state) {
+                    AntState.INSIDE -> {
+                        val moveOutside = random.nextLong(1, 1000) <= 1
+                        if (moveOutside) Ant.state.modify(ant) { AntState.OUTSIDE }
+                        else ant
+                    }
+
+                    AntState.OUTSIDE -> {
+                        val moveBy = Distance(1f)
+                        val turnOptions = sequence {
+                            // First options is to continue straight or turn slightly
+                            yield(
+                                if (random.nextLong(0, 20) < 1)
+                                    Turn((random.nextFloat() - 0.5f) * 10)
+                                else Turn(0f)
+                            )
+                            // If that option is not viable, consider these random turns either left
+                            // or right until a suitable turn is found.
+                            // NOTE: The point of using this range is that it provides a limited and
+                            // exhaustive set of options. If this set does not solve the turning
+                            // problem then there is a logical error somewhere, and we want the
+                            // program to fail with an error.
+                            (1..18)
+                                // Shuffle the options, otherwise the ants will make the smallest
+                                // possible turns and end up circling the edges of the world.
+                                .shuffled(random)
+                                .forEach { multiplier ->
+                                    yield(Turn(multiplier * 10f))
+                                    yield(Turn(-multiplier * 10f))
+                                }
+                        }
+                        val (newDirection, newPosition) = turnOptions
+                            .map { turnBy ->
+                                val newDirection = ant.direction.turn(turnBy)
+                                val positionDelta = calculateMovement(newDirection, moveBy)
+                                Pair(newDirection, ant.position.move(positionDelta))
+                            }
+                            .first { (_, positionOption) ->
+                                // Choose the first option that does not move us outside the world.
+                                World.contains(positionOption)
+                            }
+                        Ant.position.modify(ant) { newPosition }
+                            .let { Ant.direction.modify(it) { newDirection } }
+                    }
+                }
+            })
+        }
+    }
+}
