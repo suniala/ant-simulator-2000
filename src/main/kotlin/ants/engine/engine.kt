@@ -65,7 +65,7 @@ suspend fun createEngine(scope: CoroutineScope): SendChannel<StateMsg> =
                             initialState.ants.keys.forEach { antId ->
                                 launch {
                                     while (true) {
-                                        delay(random.nextLong(50, 100))
+                                        delay(random.nextLong(1, 10) * 2)
 
                                         stateChannel.send(MoveAntMsg(antId) { ant ->
                                             val moveBy = Distance(1f)
@@ -76,12 +76,20 @@ suspend fun createEngine(scope: CoroutineScope): SendChannel<StateMsg> =
                                                         Turn((random.nextFloat() - 0.5f) * 10)
                                                     else Turn(0f)
                                                 )
-                                                // If that option is not viable, try to make increasingly larger turns
-                                                // either left or right until a possible turn is found
-                                                (1..18).forEach { multiplier ->
-                                                    yield(Turn(multiplier * 10f))
-                                                    yield(Turn(-multiplier * 10f))
-                                                }
+                                                // If that option is not viable, consider these random turns either left
+                                                // or right until a suitable turn is found.
+                                                // NOTE: The point of using this range is that it provides a limited and
+                                                // exhaustive set of options. If this set does not solve the turning
+                                                // problem then there is a logical error somewhere, and we want the
+                                                // program to fail with an error.
+                                                (1..18)
+                                                    // Shuffle the options, otherwise the ants will make the smallest
+                                                    // possible turns and end up circling the edges of the world.
+                                                    .shuffled(random)
+                                                    .forEach { multiplier ->
+                                                        yield(Turn(multiplier * 10f))
+                                                        yield(Turn(-multiplier * 10f))
+                                                    }
                                             }
                                             val (newDirection, newPosition) = turnOptions
                                                 .map { turnBy ->
