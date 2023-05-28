@@ -1,5 +1,3 @@
-@file:OptIn(ExperimentalStdlibApi::class)
-
 package ants
 
 import androidx.compose.desktop.ui.tooling.preview.Preview
@@ -20,11 +18,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
-import ants.common.World
 import ants.common.World.worldSize
 import ants.engine.GetStateMsg
-import ants.engine.StateMsg
 import ants.engine.State
+import ants.engine.StateMsg
 import ants.engine.createEngine
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.SendChannel
@@ -70,7 +67,7 @@ fun App(aGetState: suspend () -> State?) {
                                 colors[ant.id.id % colors.size],
                             )
                         }
-                        .filter { (ant, _) -> World.contains(ant.position) }
+                        .filter { (ant, _) -> ant.state.isVisible() }
                         .forEach { (ant, color) ->
                             drawCircle(
                                 color = color,

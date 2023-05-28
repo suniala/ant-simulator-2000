@@ -11,11 +11,15 @@ val random = java.util.Random(System.currentTimeMillis()).asKotlinRandom()
 object World {
     val worldSize = Size(1024f, 1024f)
 
+    @ExperimentalStdlibApi
     fun contains(position: WorldPosition): Boolean =
         0f.rangeUntil(worldSize.width).contains(position.x) && 0f.rangeUntil(worldSize.height).contains(position.y)
 
     fun randomPosition(): WorldPosition =
         WorldPosition(random.nextFloat() * worldSize.width, random.nextFloat() * worldSize.height)
+
+    fun middlePosition(): WorldPosition =
+        WorldPosition(worldSize.width / 2, worldSize.height / 2)
 }
 
 data class Turn(val degrees: Float) {
