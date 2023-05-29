@@ -18,6 +18,7 @@ import ants.common.position
 import ants.common.random
 import ants.common.state
 import ants.common.strength
+import arrow.optics.copy
 import kotlinx.collections.immutable.PersistentMap
 import kotlinx.collections.immutable.persistentMapOf
 import kotlinx.collections.immutable.toPersistentHashMap
@@ -131,7 +132,7 @@ private fun CoroutineScope.antWorker(
                     AntState.INSIDE -> {
                         val moveOutside = random.nextFloat() <= Params.antGoesOutsideProbability
                         Pair(
-                            if (moveOutside) Ant.state.modify(ant) { AntState.OUTSIDE }
+                            if (moveOutside) ant.copy { Ant.state set AntState.OUTSIDE }
                             else ant,
                             false
                         )
@@ -172,8 +173,10 @@ private fun CoroutineScope.antWorker(
                                 World.contains(positionOption)
                             }
 
-                        val updatedAnt = Ant.position.modify(ant) { newPosition }
-                            .let { Ant.direction.modify(it) { newDirection } }
+                        val updatedAnt = ant.copy {
+                            Ant.position set newPosition
+                            Ant.direction set newDirection
+                        }
                         val dropPheromone = if (iterationsUntilPheromoneDrop.le(moveBy)) {
                             iterationsUntilPheromoneDrop = Params.dropPheromonePerDistance
                             true
@@ -198,8 +201,9 @@ private fun CoroutineScope.pheromoneWorker(
         while (true) {
             delay(Params.pheromoneWorkerDelayMs)
             stateChannel.send(UpdatePheromoneMsg(pheromoneId) { pheromone ->
-                if (pheromone.isEffective()) Pheromone.strength.modify(pheromone) { it * (1 - Params.pheromoneDecayPerWorkerIteration) }
-                else {
+                if (pheromone.isEffective()) {
+                    pheromone.copy { Pheromone.strength transform { it * (1 - Params.pheromoneDecayPerWorkerIteration) } }
+                } else {
                     cancel()
                     null
                 }
