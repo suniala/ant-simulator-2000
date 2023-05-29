@@ -50,6 +50,9 @@ data class Direction(val degrees: Float) {
 }
 
 data class Distance(val raw: Float) {
+    operator fun minus(other: Distance): Distance = Distance(raw - other.raw)
+    fun le(other: Distance): Boolean = raw <= other.raw
+
     init {
         require(raw >= 0)
     }

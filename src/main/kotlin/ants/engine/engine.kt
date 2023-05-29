@@ -32,6 +32,19 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@Suppress("MayBeConstant")
+object Params {
+    val ants = 10
+    val antWorkerDelayMs = 10L
+    val antGoesOutsideProbability = 0.9f
+    val antTurnsProbability = 0.1f
+    val antTurnMultiplier = 10f
+    val antMovePerIteration = Distance(2f)
+    val dropPheromonePerDistance = Distance(30f)
+    val pheromoneWorkerDelayMs = 1_000L
+    val pheromoneDecayPerWorkerIteration = 0.1f
+}
+
 sealed class StateMsg
 
 data class NextAntStateMsg(val antId: AntId, val f: (Ant) -> Pair<Ant, Boolean>) : StateMsg()
@@ -79,7 +92,7 @@ private fun CoroutineScope.stateActor(ants: PersistentMap<AntId, Ant>) = actor<S
 
 suspend fun createEngine(scope: CoroutineScope): SendChannel<StateMsg> =
     scope.run {
-        val ants = (1..100)
+        val ants = (1..Params.ants)
             .map { Ant(AntId(it), AntState.INSIDE, World.middlePosition(), Direction.randomDirection()) }
             .associateBy { it.id }
             .toPersistentHashMap()
@@ -107,13 +120,16 @@ private fun CoroutineScope.antWorker(
     antId: AntId,
 ) {
     launch {
+        // Maybe we can keep local state here if it is not interesting to other parties?
+        var iterationsUntilPheromoneDrop = Params.dropPheromonePerDistance
+
         while (true) {
-            delay(random.nextLong(1, 10) * 2)
+            delay(Params.antWorkerDelayMs)
 
             stateChannel.send(NextAntStateMsg(antId) { ant ->
                 when (ant.state) {
                     AntState.INSIDE -> {
-                        val moveOutside = random.nextLong(1, 1000) <= 1
+                        val moveOutside = random.nextFloat() <= Params.antGoesOutsideProbability
                         Pair(
                             if (moveOutside) Ant.state.modify(ant) { AntState.OUTSIDE }
                             else ant,
@@ -122,12 +138,11 @@ private fun CoroutineScope.antWorker(
                     }
 
                     AntState.OUTSIDE -> {
-                        val moveBy = Distance(1f)
                         val turnOptions = sequence {
                             // First options is to continue straight or turn slightly
                             yield(
-                                if (random.nextLong(0, 20) < 1)
-                                    Turn((random.nextFloat() - 0.5f) * 10)
+                                if (random.nextFloat() <= Params.antTurnsProbability)
+                                    Turn((random.nextFloat() - 0.5f) * 2 * Params.antTurnMultiplier)
                                 else Turn(0f)
                             )
                             // If that option is not viable, consider these random turns either left
@@ -145,6 +160,7 @@ private fun CoroutineScope.antWorker(
                                     yield(Turn(-multiplier * 10f))
                                 }
                         }
+                        val moveBy = Params.antMovePerIteration
                         val (newDirection, newPosition) = turnOptions
                             .map { turnBy ->
                                 val newDirection = ant.direction.turn(turnBy)
@@ -158,7 +174,14 @@ private fun CoroutineScope.antWorker(
 
                         val updatedAnt = Ant.position.modify(ant) { newPosition }
                             .let { Ant.direction.modify(it) { newDirection } }
-                        val dropPheromone = random.nextLong(1, 10) <= 1
+                        val dropPheromone = if (iterationsUntilPheromoneDrop.le(moveBy)) {
+                            iterationsUntilPheromoneDrop = Params.dropPheromonePerDistance
+                            true
+                        } else {
+                            iterationsUntilPheromoneDrop -= moveBy
+                            false
+                        }
+
                         Pair(updatedAnt, dropPheromone)
                     }
                 }
@@ -173,9 +196,9 @@ private fun CoroutineScope.pheromoneWorker(
 ) {
     launch {
         while (true) {
-            delay(100)
+            delay(Params.pheromoneWorkerDelayMs)
             stateChannel.send(UpdatePheromoneMsg(pheromoneId) { pheromone ->
-                if (pheromone.isEffective()) Pheromone.strength.modify(pheromone) { it * 0.9f }
+                if (pheromone.isEffective()) Pheromone.strength.modify(pheromone) { it * (1 - Params.pheromoneDecayPerWorkerIteration) }
                 else {
                     cancel()
                     null
