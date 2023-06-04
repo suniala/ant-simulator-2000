@@ -10,16 +10,20 @@ import ants.common.Distance
 import ants.common.Pheromone
 import ants.common.PheromoneId
 import ants.common.PheromoneStrength
+import ants.common.RNG
 import ants.common.Turn
 import ants.common.World
 import ants.common.calculateMovement
 import ants.common.direction
 import ants.common.directionTo
 import ants.common.distance
+import ants.common.nextBooleanWithProbability
+import ants.common.nextFloat
 import ants.common.position
-import ants.common.random
+import ants.common.pseudoRNG
 import ants.common.state
 import ants.common.strength
+import ants.common.visitedPheromones
 import arrow.optics.copy
 import kotlinx.collections.immutable.PersistentMap
 import kotlinx.collections.immutable.persistentMapOf
@@ -40,19 +44,28 @@ import kotlinx.coroutines.withContext
 object Params {
     val ants = 1
     val antWorkerDelayMs = 10L
-    val antGoesOutsideProbability = 0.9f
-    val antTurnsProbability = 0.1f
-    val antTurnMultiplier = 10f
-    val antMovePerIteration = Distance(2f)
     val dropPheromonePerDistance = Distance(1f)
     val pheromoneWorkerDelayMs = 1_000L
     val pheromoneDecayPerWorkerIteration = 0.1f
     val surroundingsLimit = Distance(50f)
 }
 
+data class AntParams(
+    val ants: Int = 1,
+    val antWorkerDelayMs: Long = 10L,
+    val antGoesOutsideProbability: Float = 0.9f,
+    val antTurnsProbability: Float = 0.1f,
+    val antTurnMultiplier: Float = 10f,
+    val antMovePerIteration: Distance = Distance(2f),
+    val dropPheromonePerDistance: Distance = Distance(10f),
+)
+
 sealed class StateMsg
 
-data class NextAntStateMsg(val antId: AntId, val f: (Ant, Collection<Pheromone>) -> Pair<Ant, Boolean>) : StateMsg()
+data class NextAntStateMsg(
+    val antId: AntId,
+    val f: (Ant, Collection<Pheromone>, rng: RNG) -> Triple<Ant, Boolean, RNG>,
+) : StateMsg()
 
 data class GetStateMsg(val response: CompletableDeferred<State>) : StateMsg()
 
@@ -60,7 +73,7 @@ data class UpdatePheromoneMsg(val pheromoneId: PheromoneId, val f: (Pheromone) -
 
 @OptIn(ObsoleteCoroutinesApi::class)
 private fun CoroutineScope.stateActor(ants: PersistentMap<AntId, Ant>) = actor<StateMsg> {
-    var state = State(ants = ants, pheromones = persistentMapOf())
+    var state = State(ants = ants, pheromones = persistentMapOf(), rng = pseudoRNG(System.currentTimeMillis()))
 
     for (msg in channel) {
         when (msg) {
@@ -72,7 +85,7 @@ private fun CoroutineScope.stateActor(ants: PersistentMap<AntId, Ant>) = actor<S
                         ant.position
                     ) le Params.surroundingsLimit
                 }.values
-                val (nextAnt, dropPheromone) = msg.f(ant, surroundings)
+                val (nextAnt, dropPheromone, nextRng) = msg.f(ant, surroundings, state.rng)
 
                 val nextPheromones =
                     if (dropPheromone) {
@@ -83,7 +96,7 @@ private fun CoroutineScope.stateActor(ants: PersistentMap<AntId, Ant>) = actor<S
                             Pheromone(pheromoneId, PheromoneStrength.fullStrength(), nextAnt.position)
                         )
                     } else state.pheromones
-                state = state.copy(ants = state.ants.put(ant.id, nextAnt), pheromones = nextPheromones)
+                state = state.copy(ants = state.ants.put(ant.id, nextAnt), pheromones = nextPheromones, rng = nextRng)
             }
 
             is GetStateMsg -> msg.response.complete(state)
@@ -138,6 +151,8 @@ private fun CoroutineScope.antWorker(
     stateChannel: SendChannel<StateMsg>,
     antId: AntId,
 ) {
+    val params = AntParams()
+
     launch {
         // Maybe we can keep local state here if it is not interesting to other parties?
         var privateState = AntWorkerPrivateState(Params.dropPheromonePerDistance)
@@ -145,36 +160,56 @@ private fun CoroutineScope.antWorker(
         while (true) {
             delay(Params.antWorkerDelayMs)
 
-            stateChannel.send(NextAntStateMsg(antId) { ant, p ->
-                val (updatedAnt, dropPheromone, updatedPrivateState) = doAnt(ant, p, privateState)
+            stateChannel.send(NextAntStateMsg(antId) { ant, p, rng ->
+                val (updatedAnt, dropPheromone, updatedPrivateState, nextRng) = doAnt(params, rng, ant, p, privateState)
                 privateState = updatedPrivateState
-                Pair(updatedAnt, dropPheromone)
+                Triple(updatedAnt, dropPheromone, nextRng)
             })
         }
     }
 }
 
 data class AntWorkerPrivateState(val distanceUntilPheromoneDrop: Distance)
-data class AntWorkerResult(val ant: Ant, val dropPheromone: Boolean, val privateState: AntWorkerPrivateState)
+data class AntWorkerResult(
+    val ant: Ant,
+    val dropPheromone: Boolean,
+    val privateState: AntWorkerPrivateState,
+    val rng: RNG
+)
 
-fun doAnt(ant: Ant, surroundings: Collection<Pheromone>, privateState: AntWorkerPrivateState): AntWorkerResult =
+fun doAnt(
+    params: AntParams,
+    rng: RNG,
+    ant: Ant,
+    surroundings: Collection<Pheromone>,
+    privateState: AntWorkerPrivateState
+): AntWorkerResult =
     when (ant.state) {
         AntState.INSIDE -> {
-            val moveOutside = random.nextFloat() <= Params.antGoesOutsideProbability
+            val (moveOutside, nextRng) = nextBooleanWithProbability(rng, params.antGoesOutsideProbability)
             AntWorkerResult(
                 if (moveOutside) ant.copy { Ant.state set AntState.OUTSIDE }
                 else ant,
                 false,
-                privateState
+                privateState,
+                nextRng,
             )
         }
 
         AntState.OUTSIDE -> {
-            val turnBy =
-                if (random.nextFloat() <= Params.antTurnsProbability)
-                    Turn((random.nextFloat() - 0.5f) * 2 * Params.antTurnMultiplier)
-                else Turn(0f)
-            val moveBy = Params.antMovePerIteration
+            val (turnBy, nextRng) =
+                nextBooleanWithProbability(rng, params.antTurnsProbability)
+                    .let { (isTurn, rng2) ->
+                        if (isTurn) {
+                            nextFloat(rng2, -1f, 1f)
+                                .let { (turnRatio, rng3) ->
+                                    Pair(Turn(turnRatio * params.antTurnMultiplier), rng3)
+                                }
+                        } else {
+                            Pair(Turn(0f), rng2)
+                        }
+                    }
+            val moveBy = params.antMovePerIteration
             val newDirection = ant.direction.turn(turnBy)
             val newPosition = ant.position.move(calculateMovement(newDirection, moveBy))
             if (World.contains(newPosition)) {
@@ -186,33 +221,23 @@ fun doAnt(ant: Ant, surroundings: Collection<Pheromone>, privateState: AntWorker
                     AntWorkerResult(
                         updatedAnt,
                         true,
-                        privateState.copy(distanceUntilPheromoneDrop = Params.dropPheromonePerDistance)
+                        privateState.copy(distanceUntilPheromoneDrop = params.dropPheromonePerDistance),
+                        nextRng,
                     )
                 } else {
                     AntWorkerResult(
                         updatedAnt,
                         false,
-                        privateState.copy(distanceUntilPheromoneDrop = privateState.distanceUntilPheromoneDrop - moveBy)
+                        privateState.copy(distanceUntilPheromoneDrop = privateState.distanceUntilPheromoneDrop - moveBy),
+                        nextRng,
                     )
                 }
             } else {
-//                            val closestUnvisitedPheromone = surroundings.asSequence()
-//                                .filter { !ant.visitedPheromones.contains(it.id) }
-//                                .map { Pair(it, distance(it.position, ant.position)) }
-//                                .minByOrNull { (_, distance) -> distance }
-//                            val fallBackDir = closestUnvisitedPheromone
-//                                ?.let { target ->
-//                                    directionTo(ant.position, target.first.position)
-//                                }
-//                            // Just go back where we came from
-//                                ?: ant.direction.turn(Turn(180f))
-//                            val newPosition2 = ant.position.move(calculateMovement(newDirection, moveBy))
-//                            Pair(newPosition2, fallBackDir)
                 val updatedAnt = ant.copy {
                     Ant.direction set ant.direction.turn(Turn(180f))
                     Ant.state set AntState.BACK_TO_NEST
                 }
-                AntWorkerResult(updatedAnt, false, privateState)
+                AntWorkerResult(updatedAnt, false, privateState, rng)
             }
         }
 
@@ -220,15 +245,23 @@ fun doAnt(ant: Ant, surroundings: Collection<Pheromone>, privateState: AntWorker
             val closestUnvisitedPheromone = surroundings.asSequence()
                 .filter { !ant.visitedPheromones.contains(it.id) }
                 .map { Pair(it, distance(it.position, ant.position)) }
-                .minByOrNull { (_, distance) -> distance }!!
+                .sortedBy { (_, distance) -> distance }
+                .filter { (_, distance) -> distance > Distance(0f) }
+                .first()
             val newDirection = directionTo(ant.position, closestUnvisitedPheromone.first.position)
-            val moveBy = Params.antMovePerIteration
+            val moveBy = params.antMovePerIteration
             val newPosition = ant.position.move(calculateMovement(newDirection, moveBy))
-            val updatedAnt = ant.copy {
-                Ant.position set newPosition
-                Ant.direction set newDirection
-            }
-            AntWorkerResult(updatedAnt, false, privateState)
+            val passed =
+                distance(Pair(ant.position, newPosition), closestUnvisitedPheromone.first.position) < Distance(0.001f)
+            val updatedAnt =
+                ant.copy {
+                    Ant.position set newPosition
+                    Ant.direction set newDirection
+                    if (passed) {
+                        Ant.visitedPheromones transform { it.add(closestUnvisitedPheromone.first.id) }
+                    }
+                }
+            AntWorkerResult(updatedAnt, false, privateState, rng)
         }
     }
 
